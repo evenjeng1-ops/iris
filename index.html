@@ -1,0 +1,937 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Q版格鬥：韶光與意境</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            background-color: #222;
+            color: #fff;
+            font-family: 'Microsoft JhengHei', Arial, sans-serif;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            min-height: 100vh;
+            overflow: hidden;
+        }
+        #game-container {
+            position: relative;
+            box-shadow: 0 0 20px rgba(0,0,0,0.8);
+            border: 4px solid #444;
+            border-radius: 10px;
+            background: #000;
+        }
+        canvas {
+            display: block;
+            border-radius: 5px;
+        }
+        #controls-info {
+            margin-top: 8px;
+            background: rgba(255, 255, 255, 0.1);
+            padding: 8px 12px;
+            border-radius: 8px;
+            text-align: center;
+            line-height: 1.3;
+            width: 800px;
+            box-sizing: border-box;
+        }
+        .controls-grid {
+            display: flex;
+            justify-content: space-between;
+            flex-wrap: nowrap;
+        }
+        .control-item {
+            background: rgba(0, 0, 0, 0.3);
+            padding: 4px 8px;
+            border-radius: 6px;
+            flex: 1;
+            margin: 0 3px;
+            font-size: 0.85em;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            white-space: nowrap;
+        }
+        .key {
+            display: inline-block;
+            background: #eee;
+            color: #333;
+            padding: 1px 6px;
+            border-radius: 4px;
+            font-weight: bold;
+            margin: 0 3px;
+            box-shadow: 0 2px 0 #ccc;
+            font-size: 0.9em;
+        }
+        .hint {
+            margin-top: 6px;
+            color: #ffccaa;
+            font-size: 0.8em;
+        }
+    </style>
+</head>
+<body>
+
+    <div id="game-container">
+        <canvas id="gameCanvas" width="800" height="450"></canvas>
+    </div>
+
+    <div id="controls-info">
+        <div class="controls-grid">
+            <div class="control-item"><span class="key">A</span><span class="key">D</span> 左右移動</div>
+            <div class="control-item"><span class="key">W</span> 跳躍</div>
+            <div class="control-item"><span class="key">J</span> 普通攻擊</div>
+            <div class="control-item"><span class="key">K</span> 重擊/特技</div>
+            <div class="control-item"><span class="key">Space</span> 能量爆發</div>
+        </div>
+        <div class="hint">💡 提示：血量低於30%時將自動進入「意境爆發」，攻速翻倍且獲得短暫無敵！每一關敵人都有獨特招式，請小心應對。</div>
+    </div>
+
+<script>
+/**
+ * 遊戲核心引擎與邏輯
+ */
+const canvas = document.getElementById('gameCanvas');
+const ctx = canvas.getContext('2d');
+
+// 按鍵狀態
+const keys = { w: false, a: false, d: false, j: false, k: false, space: false };
+document.addEventListener('keydown', e => {
+    const key = e.key.toLowerCase();
+    if(key === ' ') keys.space = true;
+    else if(keys.hasOwnProperty(key)) keys[key] = true;
+});
+document.addEventListener('keyup', e => {
+    const key = e.key.toLowerCase();
+    if(key === ' ') keys.space = false;
+    else if(keys.hasOwnProperty(key)) keys[key] = false;
+});
+
+// 全局狀態
+let gameState = 'START'; // START, PLAYING, LEVEL_CLEAR, GAME_OVER, GAME_WIN
+let currentLevel = 1;
+const MAX_LEVEL = 10;
+let time = 0;
+let frameCount = 0;
+let zenMode = false;
+let zenTimer = 0;
+
+// 特效與投射物
+let particles = [];
+let projectiles = [];
+let obstacles = [];
+let floatingTexts = [];
+
+// 音效替代(畫面震動)
+let screenShake = 0;
+
+// NPC 配置表
+const NPC_DATA = [
+    { name: '萌新小豆', hp: 100, speed: 2, color: '#ff7777', logic: 'DASH' },
+    { name: '風之精靈', hp: 150, speed: 2.5, color: '#77ffaa', logic: 'WIND' },
+    { name: '鋼鐵守衛', hp: 250, speed: 1.5, color: '#888888', logic: 'RECOIL' },
+    { name: '幻影刺客', hp: 180, speed: 3.5, color: '#aa33ff', logic: 'TELEPORT' },
+    { name: '冰霜導師', hp: 200, speed: 2, color: '#77ccff', logic: 'ICE' },
+    { name: '爆焰拳手', hp: 220, speed: 3.5, color: '#ff4422', logic: 'COMBO' },
+    { name: '雷電歌姬', hp: 250, speed: 2.5, color: '#ffff44', logic: 'AOE' },
+    { name: '大地之靈', hp: 300, speed: 1.5, color: '#aa7744', logic: 'OBSTACLE' },
+    { name: '暮光詩人', hp: 250, speed: 2, color: '#ff77cc', logic: 'REVERSE' },
+    { name: '幻境主宰', hp: 500, speed: 4, color: '#ffffff', logic: 'RANDOM' }
+];
+
+// --- 輔助函式 ---
+function addParticle(x, y, color, speed=2, count=10) {
+    for(let i=0; i<count; i++){
+        particles.push({
+            x: x, y: y,
+            vx: (Math.random()-0.5)*speed*2,
+            vy: (Math.random()-0.5)*speed*2,
+            life: 1.0, color: color
+        });
+    }
+}
+function addDamageText(x, y, text, color) {
+    floatingTexts.push({ x, y, text, life: 1.0, color });
+}
+function triggerShake(intensity) {
+    screenShake = intensity;
+}
+
+// --- 實體類別 (玩家與NPC共用) ---
+class Entity {
+    constructor(isPlayer, data = null) {
+        this.isPlayer = isPlayer;
+        this.width = 30;
+        this.height = 50;
+        this.y = canvas.height - 50 - this.height;
+        this.x = isPlayer ? 100 : canvas.width - 100;
+        
+        this.vx = 0;
+        this.vy = 0;
+        this.gravity = 0.5;
+        this.isGrounded = false;
+        
+        this.hp = isPlayer ? 300 : data.hp;
+        this.maxHp = this.hp;
+        this.energy = 0;
+        this.maxEnergy = 100;
+        
+        this.speed = isPlayer ? 4 : data.speed;
+        this.color = isPlayer ? '#44aaff' : data.color;
+        this.name = isPlayer ? '玩家 (Player)' : data.name;
+        this.facing = isPlayer ? 1 : -1; // 1 右, -1 左
+        
+        // 動作狀態
+        this.state = 'IDLE'; // IDLE, RUN, JUMP, ATTACK, HURT, GUARD
+        this.stateTimer = 0;
+        this.attackType = 0; // 1 普攻, 2 重擊, 3 爆發
+        this.invincible = false;
+        this.invincibleTimer = 0;
+
+        // 特殊異常狀態
+        this.reversed = false;
+        this.speedMod = 1;
+        
+        // NPC 專用
+        this.logic = data ? data.logic : null;
+        this.cooldown = 0;
+    }
+
+    update() {
+        // 重力與跳躍
+        this.vy += this.gravity;
+        this.y += this.vy;
+        
+        if (this.y >= canvas.height - 50 - this.height) {
+            this.y = canvas.height - 50 - this.height;
+            this.vy = 0;
+            this.isGrounded = true;
+        } else {
+            this.isGrounded = false;
+        }
+
+        // 狀態計時器
+        if (this.stateTimer > 0) {
+            this.stateTimer--;
+            if (this.stateTimer <= 0) {
+                if(this.state === 'ATTACK' || this.state === 'HURT' || this.state === 'GUARD') {
+                    this.state = 'IDLE';
+                }
+            }
+        }
+        
+        if (this.invincibleTimer > 0) {
+            this.invincibleTimer--;
+            if(this.invincibleTimer <= 0) this.invincible = false;
+        }
+
+        // X軸邊界與障礙物碰撞
+        this.x += this.vx;
+        if (this.x < 15) this.x = 15;
+        if (this.x > canvas.width - 15) this.x = canvas.width - 15;
+
+        obstacles.forEach(obs => {
+            if (this.x > obs.x - 15 && this.x < obs.x + obs.width + 15 && this.y + this.height > obs.y) {
+                if (this.vx > 0) this.x = obs.x - 15;
+                if (this.vx < 0) this.x = obs.x + obs.width + 15;
+            }
+        });
+        
+        // 動畫狀態更新
+        if (this.state !== 'ATTACK' && this.state !== 'HURT') {
+            if (Math.abs(this.vx) > 0.1) this.state = 'RUN';
+            else this.state = 'IDLE';
+            if (!this.isGrounded) this.state = 'JUMP';
+        }
+    }
+
+    takeDamage(amount, knockbackX) {
+        if (this.invincible || this.hp <= 0) return;
+        
+        this.hp -= amount;
+        addDamageText(this.x, this.y - 20, `-${amount}`, '#ff4444');
+        triggerShake(amount > 20 ? 8 : 4);
+        
+        if (this.hp <= 0) {
+            this.hp = 0;
+            if(!this.isPlayer) {
+                gameState = 'LEVEL_CLEAR';
+                player.hp = Math.min(player.maxHp, player.hp + 50); // 通關回血
+            } else {
+                gameState = 'GAME_OVER';
+            }
+        } else {
+            this.state = 'HURT';
+            this.stateTimer = 15;
+            this.vx = knockbackX;
+            this.vy = -3;
+        }
+    }
+
+    attack(type) {
+        if (this.state === 'ATTACK' || this.state === 'HURT') return;
+        
+        this.state = 'ATTACK';
+        this.attackType = type;
+        
+        // 意境模式：攻速加倍(冷卻減半)
+        let speedMultiplier = (this.isPlayer && zenMode) ? 0.5 : 1;
+        
+        if (type === 1) { // 普攻
+            this.stateTimer = 15 * speedMultiplier;
+            this.createHitbox(40, 30, 10, 5, 2);
+            if(this.isPlayer) this.energy = Math.min(this.maxEnergy, this.energy + 10);
+        } else if (type === 2) { // 重擊
+            this.stateTimer = 30 * speedMultiplier;
+            this.createHitbox(70, 40, 25, 10, 5);
+            if(this.isPlayer) this.energy = Math.min(this.maxEnergy, this.energy + 20);
+        } else if (type === 3) { // 爆發
+            this.stateTimer = 40 * speedMultiplier;
+            triggerShake(10);
+            this.energy = 0; // 消耗能量
+            // 爆發特效範圍
+            this.createHitbox(150, 60, 50, 15, 8);
+            addParticle(this.x + this.facing*50, this.y, '#ffff00', 8, 30);
+        }
+    }
+
+    createHitbox(width, height, damage, frames, knockback) {
+        let hitX = this.facing === 1 ? this.x : this.x - width;
+        let hitY = this.y + 10;
+        
+        let target = this.isPlayer ? npc : player;
+        
+        // 簡單AABB碰撞 (延遲1-2幀判定或立即判定)
+        setTimeout(() => {
+            if (target.hp > 0 && 
+                target.x + 15 > hitX && target.x - 15 < hitX + width &&
+                target.y + target.height > hitY && target.y < hitY + height) {
+                
+                // 鋼鐵守衛反傷邏輯
+                if (!this.isPlayer === false && target.logic === 'RECOIL' && target.state === 'GUARD') {
+                    this.takeDamage(damage * 0.5, -this.facing * 5);
+                    addParticle(target.x, target.y, '#aaaaaa', 5, 10);
+                } else {
+                    target.takeDamage(damage, this.facing * knockback);
+                    addParticle(target.x, target.y, '#ffffff', 4, 10);
+                }
+            }
+            // 繪製攻擊軌跡
+            projectiles.push({
+                x: hitX, y: hitY,
+                vx: 0, vy: 0,
+                width: width, height: height,
+                life: 0.2, color: this.attackType === 3 ? 'rgba(255, 255, 0, 0.5)' : 'rgba(255, 255, 255, 0.4)',
+                isHitbox: true // 純視覺
+            });
+        }, 50); // 些微前搖
+    }
+
+    draw(ctx) {
+        ctx.save();
+        ctx.translate(this.x, this.y + this.height);
+        ctx.scale(this.facing, 1);
+        
+        let bounce = 0;
+        if (this.state === 'IDLE') bounce = Math.sin(frameCount * 0.1) * 2;
+        if (this.state === 'RUN') bounce = Math.abs(Math.sin(frameCount * 0.2)) * 4;
+        
+        ctx.translate(0, -bounce);
+
+        // 受傷閃爍
+        if (this.state === 'HURT' && frameCount % 4 < 2) {
+            ctx.filter = 'brightness(200%)';
+        }
+        if (this.invincible && frameCount % 6 < 3) {
+            ctx.globalAlpha = 0.5;
+        }
+
+        // Q版人物繪製 (頭、身體、四肢)
+        ctx.strokeStyle = this.color;
+        ctx.lineWidth = 6;
+        ctx.lineCap = 'round';
+        ctx.lineJoin = 'round';
+
+        let legAngle = 0;
+        let armAngle = 0;
+        
+        if (this.state === 'RUN') {
+            legAngle = Math.sin(frameCount * 0.2) * 15;
+            armAngle = -legAngle;
+        } else if (this.state === 'ATTACK') {
+            armAngle = 45; // 攻擊抬手
+        } else if (this.state === 'GUARD') {
+            armAngle = -30;
+        }
+
+        // 後手後腳
+        ctx.beginPath(); // 後腳
+        ctx.moveTo(0, -15);
+        ctx.lineTo(-5 + legAngle, 0);
+        ctx.stroke();
+
+        ctx.beginPath(); // 後手
+        ctx.moveTo(0, -30);
+        ctx.lineTo(10 + (this.state==='ATTACK'?20:armAngle), -20);
+        ctx.stroke();
+
+        // 身體 (水滴或橢圓感)
+        ctx.fillStyle = this.color;
+        ctx.beginPath();
+        ctx.ellipse(0, -25, 12, 18, 0, 0, Math.PI*2);
+        ctx.fill();
+
+        // 前腳
+        ctx.beginPath(); 
+        ctx.moveTo(0, -15);
+        ctx.lineTo(5 - legAngle, 0);
+        ctx.stroke();
+
+        // 前手
+        ctx.beginPath();
+        ctx.moveTo(0, -30);
+        if (this.state === 'ATTACK') {
+            ctx.lineTo(25, -25); // 伸長攻擊
+            if(this.attackType === 3) ctx.lineTo(35, -40);
+        } else if (this.state === 'GUARD') {
+            ctx.lineTo(15, -40); // 舉手防禦
+        } else {
+            ctx.lineTo(-5 + armAngle, -15);
+        }
+        ctx.stroke();
+
+        // 頭部 (超大比例)
+        ctx.beginPath();
+        ctx.arc(0, -50, 18, 0, Math.PI*2);
+        ctx.fillStyle = '#ffdfc4'; // Q版膚色
+        if(this.logic === 'TELEPORT' || this.logic === 'OBSTACLE') ctx.fillStyle = '#ccc';
+        ctx.fill();
+        ctx.stroke(); // 加上邊框更立體
+
+        // 眼睛
+        ctx.fillStyle = '#000';
+        if (this.state === 'HURT') {
+            ctx.fillText('><', 2, -48);
+        } else if (this.state === 'ATTACK') {
+            ctx.beginPath(); ctx.arc(8, -52, 2, 0, Math.PI*2); ctx.fill();
+            ctx.beginPath(); ctx.moveTo(5, -55); ctx.lineTo(12, -53); ctx.stroke(); // 怒眉
+        } else {
+            ctx.beginPath(); ctx.arc(6, -50, 2, 0, Math.PI*2); ctx.fill();
+            ctx.beginPath(); ctx.arc(12, -50, 2, 0, Math.PI*2); ctx.fill();
+        }
+
+        // 裝飾或武器
+        if (this.attackType === 2 && this.state === 'ATTACK') {
+            ctx.strokeStyle = '#fff';
+            ctx.lineWidth = 4;
+            ctx.beginPath();
+            ctx.moveTo(25, -25);
+            ctx.lineTo(45, -5);
+            ctx.stroke();
+        }
+
+        ctx.restore();
+        
+        // 異常狀態圖示
+        if (this.reversed) {
+            ctx.fillStyle = '#ff00ff';
+            ctx.font = '20px Arial';
+            ctx.fillText('?', this.x - 10, this.y - 20);
+        }
+        if (this.speedMod < 1) {
+            ctx.fillStyle = '#00ffff';
+            ctx.font = '20px Arial';
+            ctx.fillText('❄️', this.x - 10, this.y - 20);
+        }
+    }
+}
+
+let player;
+let npc;
+
+function initLevel() {
+    player = new Entity(true);
+    let npcData = NPC_DATA[currentLevel - 1];
+    npc = new Entity(false, npcData);
+    
+    particles = [];
+    projectiles = [];
+    obstacles = [];
+    floatingTexts = [];
+    player.hp = player.maxHp;
+    player.energy = 0;
+    zenMode = false;
+    
+    gameState = 'PLAYING';
+}
+
+// --- 控制邏輯 ---
+function updatePlayer() {
+    if (player.state === 'HURT') return;
+    
+    // 意境檢測
+    if (!zenMode && player.hp > 0 && player.hp <= player.maxHp * 0.3) {
+        zenMode = true;
+        zenTimer = 180; // 無敵時間3秒 (60fps)
+        player.invincible = true;
+        player.invincibleTimer = 180;
+        triggerShake(15);
+        for(let i=0; i<5; i++) addFloatingZenText();
+    }
+
+    let pSpeed = player.speed * player.speedMod * (zenMode ? 1.5 : 1);
+    player.vx = 0;
+
+    let leftKey = player.reversed ? keys.d : keys.a;
+    let rightKey = player.reversed ? keys.a : keys.d;
+
+    if (leftKey && player.state !== 'ATTACK') {
+        player.vx = -pSpeed;
+        player.facing = -1;
+    }
+    if (rightKey && player.state !== 'ATTACK') {
+        player.vx = pSpeed;
+        player.facing = 1;
+    }
+    if (keys.w && player.isGrounded && player.state !== 'ATTACK') {
+        player.vy = -10;
+        player.isGrounded = false;
+        keys.w = false; // 防止連跳
+    }
+    
+    if (keys.j) { player.attack(1); keys.j = false; }
+    if (keys.k) { player.attack(2); keys.k = false; }
+    if (keys.space && player.energy >= player.maxEnergy) { player.attack(3); keys.space = false; }
+}
+
+// --- NPC AI 邏輯 ---
+function updateNPC() {
+    if (npc.state === 'HURT' || npc.hp <= 0) return;
+
+    let dist = player.x - npc.x;
+    let absDist = Math.abs(dist);
+    npc.facing = dist > 0 ? 1 : -1;
+    
+    if (npc.cooldown > 0) npc.cooldown--;
+
+    // 基本移動邏輯 (依據難度提升速度)
+    let moveSpeed = npc.speed * (1 + currentLevel * 0.05);
+    
+    // 取得當前AI邏輯 (若為幻境主宰則隨機挑選)
+    let currentLogic = npc.logic;
+    if (currentLogic === 'RANDOM') {
+        if (frameCount % 180 === 0) {
+            const logics = ['DASH', 'WIND', 'RECOIL', 'TELEPORT', 'ICE', 'COMBO', 'AOE', 'OBSTACLE', 'REVERSE'];
+            npc.tempLogic = logics[Math.floor(Math.random() * logics.length)];
+        }
+        currentLogic = npc.tempLogic || 'DASH';
+    }
+
+    // 依據不同特性執行動作
+    switch (currentLogic) {
+        case 'DASH':
+            if (absDist > 45) npc.vx = npc.facing * moveSpeed;
+            else { npc.vx = 0; if (npc.cooldown <= 0) { npc.attack(1); npc.cooldown = 40; } }
+            break;
+            
+        case 'WIND':
+            if (absDist > 250) npc.vx = npc.facing * moveSpeed;
+            else if (absDist < 150) npc.vx = -npc.facing * moveSpeed; // 保持距離
+            else npc.vx = 0;
+            
+            if (npc.cooldown <= 0) {
+                npc.state = 'ATTACK'; npc.stateTimer = 20;
+                projectiles.push({
+                    x: npc.x, y: npc.y + 15, vx: npc.facing * 6, vy: 0,
+                    width: 15, height: 15, life: 2.0, color: '#77ffaa', isProjectile: true, damage: 15
+                });
+                npc.cooldown = 80;
+            }
+            break;
+
+        case 'RECOIL':
+            if (absDist > 60) {
+                npc.vx = npc.facing * moveSpeed;
+                npc.state = 'RUN';
+            } else {
+                npc.vx = 0;
+                if (npc.cooldown <= 0) {
+                    if (Math.random() > 0.5) { npc.attack(2); npc.cooldown = 60; }
+                    else { npc.state = 'GUARD'; npc.stateTimer = 60; npc.cooldown = 100; }
+                }
+            }
+            break;
+
+        case 'TELEPORT':
+            if (npc.cooldown <= 0 && absDist > 100) {
+                addParticle(npc.x, npc.y, '#aa33ff', 5, 20);
+                npc.x = player.x - player.facing * 60; // 傳送到玩家背後
+                npc.y = player.y;
+                npc.facing = player.facing;
+                npc.cooldown = 120;
+                npc.attack(1);
+            } else if (absDist > 45) {
+                npc.vx = npc.facing * moveSpeed;
+            } else {
+                npc.vx = 0;
+                if (npc.cooldown <= 60) { npc.attack(1); npc.cooldown = 80; }
+            }
+            break;
+
+        case 'ICE':
+            if (absDist > 200) npc.vx = npc.facing * moveSpeed;
+            else npc.vx = 0;
+            if (npc.cooldown <= 0) {
+                npc.state = 'ATTACK'; npc.stateTimer = 20;
+                projectiles.push({
+                    x: npc.x, y: npc.y + 15, vx: npc.facing * 4, vy: 0,
+                    width: 20, height: 20, life: 2.0, color: '#77ccff', isProjectile: true, damage: 10, effect: 'SLOW'
+                });
+                npc.cooldown = 90;
+            }
+            break;
+
+        case 'COMBO':
+            if (absDist > 45) npc.vx = npc.facing * moveSpeed;
+            else {
+                npc.vx = 0;
+                if (npc.cooldown <= 0) {
+                    npc.attack(1);
+                    setTimeout(() => { if(npc.hp>0) npc.attack(1); }, 200);
+                    setTimeout(() => { if(npc.hp>0) npc.attack(2); }, 400);
+                    npc.cooldown = 100;
+                }
+            }
+            break;
+
+        case 'AOE':
+            if (absDist > 100) npc.vx = npc.facing * moveSpeed;
+            else {
+                npc.vx = 0;
+                if (npc.cooldown <= 0) {
+                    npc.state = 'ATTACK'; npc.stateTimer = 40;
+                    setTimeout(() => {
+                        projectiles.push({
+                            x: npc.x, y: npc.y + 20, vx: 0, vy: 0,
+                            width: 160, height: 60, life: 0.3, color: 'rgba(255, 255, 68, 0.6)', 
+                            isProjectile: true, damage: 25, centered: true
+                        });
+                        addParticle(npc.x, npc.y, '#ffff44', 8, 30);
+                        triggerShake(5);
+                    }, 300);
+                    npc.cooldown = 120;
+                }
+            }
+            break;
+
+        case 'OBSTACLE':
+            if (absDist > 150) npc.vx = npc.facing * moveSpeed;
+            else npc.vx = 0;
+            if (npc.cooldown <= 0) {
+                npc.state = 'ATTACK'; npc.stateTimer = 20;
+                obstacles.push({
+                    x: npc.x + npc.facing * 80, y: canvas.height - 100,
+                    width: 30, height: 50, life: 3.0
+                });
+                npc.cooldown = 150;
+            } else if (absDist < 60 && npc.cooldown < 100) {
+                npc.attack(2); npc.cooldown += 40;
+            }
+            break;
+
+        case 'REVERSE':
+            if (absDist > 180) npc.vx = npc.facing * moveSpeed;
+            else npc.vx = -npc.facing * moveSpeed; // 後退
+            if (npc.cooldown <= 0) {
+                npc.state = 'ATTACK'; npc.stateTimer = 30;
+                projectiles.push({
+                    x: npc.x, y: npc.y + 15, vx: npc.facing * 5, vy: 0,
+                    width: 20, height: 20, life: 3.0, color: '#ff77cc', isProjectile: true, damage: 5, effect: 'REVERSE'
+                });
+                npc.cooldown = 150;
+            }
+            break;
+    }
+}
+
+// --- 更新與繪製背景 ---
+const ZEN_WORDS = ['意', '境', '破', '滅', '流', '光', '影', '斬'];
+
+function addFloatingZenText() {
+    floatingTexts.push({
+        x: Math.random() * canvas.width,
+        y: -30,
+        text: ZEN_WORDS[Math.floor(Math.random() * ZEN_WORDS.length)],
+        life: 3.0,
+        color: `rgba(255, ${Math.random()*100}, 50, 0.5)`,
+        isZen: true
+    });
+}
+
+function drawBackground(ctx) {
+    let grad = ctx.createLinearGradient(0, 0, 0, canvas.height);
+    
+    if (zenMode) {
+        grad.addColorStop(0, '#110000');
+        grad.addColorStop(1, '#440000');
+    } else {
+        // 韶光變化：1-3 早晨, 4-6 黃昏, 7-10 星空
+        if (currentLevel <= 3) {
+            grad.addColorStop(0, '#87CEEB');
+            grad.addColorStop(1, '#e0f6ff');
+        } else if (currentLevel <= 6) {
+            grad.addColorStop(0, '#FF7F50');
+            grad.addColorStop(1, '#ffcba4');
+        } else {
+            grad.addColorStop(0, '#191970');
+            grad.addColorStop(1, '#000022');
+        }
+    }
+    
+    ctx.fillStyle = grad;
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+    // 意境模式月亮
+    if (zenMode) {
+        ctx.fillStyle = '#ff2222';
+        ctx.beginPath();
+        ctx.arc(canvas.width / 2, 100, 80, 0, Math.PI*2);
+        ctx.fill();
+        
+        if (frameCount % 30 === 0) addFloatingZenText();
+    }
+
+    // 地板
+    ctx.fillStyle = zenMode ? '#220000' : '#444';
+    ctx.fillRect(0, canvas.height - 50, canvas.width, 50);
+}
+
+// --- 更新與繪製 UI ---
+function drawUI(ctx) {
+    // 玩家 HP
+    ctx.fillStyle = '#333';
+    ctx.fillRect(20, 20, 250, 20);
+    ctx.fillStyle = '#44ff44';
+    ctx.fillRect(20, 20, 250 * (player.hp / player.maxHp), 20);
+    ctx.strokeStyle = '#fff';
+    ctx.strokeRect(20, 20, 250, 20);
+    ctx.fillStyle = '#fff';
+    ctx.font = '14px Arial';
+    ctx.fillText(`${player.name} HP: ${Math.max(0, Math.floor(player.hp))}`, 25, 35);
+
+    // 玩家 能量
+    ctx.fillStyle = '#333';
+    ctx.fillRect(20, 45, 200, 10);
+    ctx.fillStyle = '#ffff44';
+    ctx.fillRect(20, 45, 200 * (player.energy / player.maxEnergy), 10);
+    if(player.energy >= player.maxEnergy) {
+        ctx.fillStyle = '#fff';
+        ctx.fillText('SPACE 爆發就緒!', 225, 55);
+    }
+
+    // NPC HP
+    ctx.fillStyle = '#333';
+    ctx.fillRect(canvas.width - 270, 20, 250, 20);
+    ctx.fillStyle = '#ff4444';
+    ctx.fillRect(canvas.width - 270 + 250 * (1 - npc.hp / npc.maxHp), 20, 250 * (npc.hp / npc.maxHp), 20);
+    ctx.strokeRect(canvas.width - 270, 20, 250, 20);
+    ctx.fillStyle = '#fff';
+    ctx.fillText(`${npc.name} HP: ${Math.max(0, Math.floor(npc.hp))}`, canvas.width - 265, 35);
+    
+    // 關卡資訊
+    ctx.fillStyle = '#fff';
+    ctx.font = 'bold 20px Arial';
+    ctx.textAlign = 'center';
+    ctx.fillText(`關卡 ${currentLevel} / ${MAX_LEVEL}`, canvas.width / 2, 35);
+    ctx.textAlign = 'left';
+
+    // 意境提示
+    if (zenMode) {
+        ctx.fillStyle = '#ff4444';
+        ctx.font = 'bold 24px Microsoft JhengHei';
+        ctx.textAlign = 'center';
+        ctx.fillText('【 意 境 爆 發 】', canvas.width / 2, 70);
+        ctx.textAlign = 'left';
+    }
+}
+
+// --- 遊戲主迴圈 ---
+function loop() {
+    frameCount++;
+
+    // 畫面震動
+    ctx.save();
+    if (screenShake > 0) {
+        ctx.translate((Math.random()-0.5)*screenShake, (Math.random()-0.5)*screenShake);
+        screenShake *= 0.8;
+        if(screenShake < 0.5) screenShake = 0;
+    }
+
+    drawBackground(ctx);
+
+    if (gameState === 'START') {
+        ctx.fillStyle = 'rgba(0,0,0,0.7)';
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+        ctx.fillStyle = '#fff';
+        ctx.font = '30px Microsoft JhengHei';
+        ctx.textAlign = 'center';
+        ctx.fillText('Q版格鬥：韶光與意境', canvas.width/2, canvas.height/2 - 20);
+        ctx.font = '16px Microsoft JhengHei';
+        ctx.fillText('按 J 鍵開始遊戲', canvas.width/2, canvas.height/2 + 20);
+        ctx.textAlign = 'left';
+        
+        if (keys.j) initLevel();
+    } 
+    else if (gameState === 'PLAYING') {
+        player.update();
+        updatePlayer();
+        npc.update();
+        updateNPC();
+
+        // 更新狀態清除
+        player.reversed = false;
+        player.speedMod = 1;
+
+        // 更新障礙物
+        for (let i = obstacles.length - 1; i >= 0; i--) {
+            let obs = obstacles[i];
+            obs.life -= 1/60;
+            ctx.fillStyle = 'rgba(170, 119, 68, ' + Math.min(1, obs.life) + ')';
+            ctx.fillRect(obs.x, obs.y, obs.width, obs.height);
+            if (obs.life <= 0) obstacles.splice(i, 1);
+        }
+
+        // 更新投射物與判定區
+        for (let i = projectiles.length - 1; i >= 0; i--) {
+            let p = projectiles[i];
+            p.life -= 1/60;
+            p.x += p.vx;
+            p.y += p.vy;
+            
+            ctx.fillStyle = p.color;
+            if (p.centered) {
+                ctx.fillRect(p.x - p.width/2, p.y - p.height/2, p.width, p.height);
+            } else {
+                ctx.fillRect(p.x, p.y, p.width, p.height);
+            }
+
+            // 實體子彈碰撞判斷
+            if (p.isProjectile) {
+                // 將子彈的坐標標準化 (處理 centered 屬性)
+                let px = p.centered ? p.x - p.width/2 : p.x;
+                let py = p.centered ? p.y - p.height/2 : p.y;
+                
+                // 玩家的 hitbox：寬度左右加20，高度涵蓋頭頂 (player.y - 18) 到腳底
+                if (player.hp > 0 && 
+                    px < player.x + 20 && px + p.width > player.x - 20 &&
+                    py < player.y + player.height && py + p.height > player.y - 18) {
+                    
+                    player.takeDamage(p.damage, p.vx * 0.5 || (player.x > px ? 3 : -3));
+                    if (p.effect === 'SLOW') player.speedMod = 0.5;
+                    if (p.effect === 'REVERSE') player.reversed = true;
+                    addParticle(p.x, p.y, p.color, 3, 10);
+                    p.life = 0; // 擊中後銷毀
+                }
+            }
+
+            if (p.life <= 0) projectiles.splice(i, 1);
+        }
+
+        // 實體繪製
+        npc.draw(ctx);
+        player.draw(ctx);
+
+        // 粒子更新
+        for (let i = particles.length - 1; i >= 0; i--) {
+            let p = particles[i];
+            p.x += p.vx;
+            p.y += p.vy;
+            p.life -= 0.05;
+            ctx.fillStyle = p.color;
+            ctx.globalAlpha = Math.max(0, p.life);
+            ctx.beginPath(); ctx.arc(p.x, p.y, 3, 0, Math.PI*2); ctx.fill();
+            ctx.globalAlpha = 1.0;
+            if (p.life <= 0) particles.splice(i, 1);
+        }
+
+        // 浮動文字
+        for (let i = floatingTexts.length - 1; i >= 0; i--) {
+            let t = floatingTexts[i];
+            if (t.isZen) {
+                t.y += 2;
+                t.life -= 0.01;
+                ctx.font = '40px Microsoft JhengHei';
+            } else {
+                t.y -= 1;
+                t.life -= 0.02;
+                ctx.font = 'bold 20px Arial';
+            }
+            ctx.fillStyle = t.color;
+            ctx.globalAlpha = Math.max(0, t.life);
+            ctx.fillText(t.text, t.x, t.y);
+            ctx.globalAlpha = 1.0;
+            if (t.life <= 0) floatingTexts.splice(i, 1);
+        }
+
+        drawUI(ctx);
+    }
+    else if (gameState === 'LEVEL_CLEAR') {
+        drawUI(ctx);
+        ctx.fillStyle = 'rgba(0,0,0,0.5)';
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+        ctx.fillStyle = '#fff';
+        ctx.textAlign = 'center';
+        ctx.font = '30px Microsoft JhengHei';
+        ctx.fillText(`擊敗了 ${npc.name} !`, canvas.width/2, canvas.height/2 - 20);
+        ctx.font = '16px Microsoft JhengHei';
+        
+        if (currentLevel < MAX_LEVEL) {
+            ctx.fillText('按 J 鍵進入下一關', canvas.width/2, canvas.height/2 + 20);
+            if (keys.j) {
+                currentLevel++;
+                initLevel();
+                keys.j = false;
+            }
+        } else {
+            gameState = 'GAME_WIN';
+        }
+        ctx.textAlign = 'left';
+    }
+    else if (gameState === 'GAME_OVER') {
+        ctx.fillStyle = 'rgba(100,0,0,0.7)';
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+        ctx.fillStyle = '#fff';
+        ctx.textAlign = 'center';
+        ctx.font = '40px Microsoft JhengHei';
+        ctx.fillText('勝 敗 乃 兵 家 常 事', canvas.width/2, canvas.height/2 - 20);
+        ctx.font = '16px Microsoft JhengHei';
+        ctx.fillText('按 J 鍵重新挑戰本關', canvas.width/2, canvas.height/2 + 30);
+        ctx.textAlign = 'left';
+        if (keys.j) { initLevel(); keys.j = false; }
+    }
+    else if (gameState === 'GAME_WIN') {
+        ctx.fillStyle = 'rgba(255,255,255,0.9)';
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+        ctx.fillStyle = '#000';
+        ctx.textAlign = 'center';
+        ctx.font = '40px Microsoft JhengHei';
+        ctx.fillText('通 關 幻 境 ， 意 境 大 成', canvas.width/2, canvas.height/2 - 20);
+        ctx.font = '16px Microsoft JhengHei';
+        ctx.fillText('感謝遊玩！重新整理頁面可重頭開始。', canvas.width/2, canvas.height/2 + 30);
+        ctx.textAlign = 'left';
+    }
+
+    ctx.restore();
+    requestAnimationFrame(loop);
+}
+
+// 啟動遊戲迴圈
+requestAnimationFrame(loop);
+
+</script>
+</body>
+</html>
